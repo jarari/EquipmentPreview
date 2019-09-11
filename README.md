@@ -19,6 +19,7 @@ To build this project, you'll need SKSE 1.7.32 with a modification on GameEvents
 
 You need to put "protected:" on line 18 like this:
 
+```
 ...
 class EventDispatcher
 {
@@ -27,3 +28,5 @@ protected:
 
 	SimpleLock			lock;				// 000
 ...
+```
+so the custom EventDispatcher class MenuOpenCloseEventSource can access to SimpleLock object.
