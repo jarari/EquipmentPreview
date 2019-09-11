@@ -5,15 +5,17 @@ The main concept of this mod is that a mannequin will be shown instead of the ac
 
 The user will be able to put clothes on the mannequin without actually adding items into their inventory and see how it looks on their characters.
 
-There are four features at this moment:
+# Features
 
-  *Equip
-  *Unequip all
-  *Sync from mannequin to player
-  *Sync from player to mannequin
+There are four features at this moment:
+1. Equip
+2. Unequip all
+3. Sync from mannequin to player
+4. Sync from player to mannequin
   
 Also, if you have HDT PE installed, havok physics objects will keep enabled even in the inventory menu.
 
+# Building the project
 
 To build this project, you'll need SKSE 1.7.32 with a modification on GameEvents.h
 
