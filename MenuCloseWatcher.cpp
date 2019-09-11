@@ -440,7 +440,7 @@ void SetupCamera() {
 	oldCamOffsetY = *(float*)((UInt32)pCamState + 0x40);
 	oldCamOffsetZ = *(float*)((UInt32)pCamState + 0x44);
 	oldCamZoom = *(float*)((UInt32)pCamState + 0x54);
-	*(float*)((UInt32)pCamState + 0xB0) = 0.1f; //base pitch
+	*(float*)((UInt32)pCamState + 0xB0) = -0.1f; //base pitch
 	*(float*)((UInt32)pCamState + 0x54) = 0; //base zoom
 	*(UInt8*)((UInt32)pCamState + 0xB4) = 1; //isStanding? anyway it disables the yaw control, so we set it to 1.
 	oldFadeOutLim = GetINISetting("fActorFadeOutLimit:Camera")->data.f32;
