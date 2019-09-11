@@ -30,3 +30,21 @@
 *.exe
 *.out
 *.app
+
+# Logs
+*.log
+*.tlog
+*.db
+*.idb
+*.db-shm
+*.db-wal
+*.doc
+*.opendb
+
+# Visual Studio Files
+Debug
+Release
+*.suo
+*.csproj.user
+*.vbproj.user
+ipch
