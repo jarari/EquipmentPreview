@@ -1,5 +1,8 @@
+#include "CellLoadWatcher.h"
 #include "ContainerChangeWatcher.h"
+#include "InputWatcher.h"
 #include "MenuCloseWatcher.h"
+#include <skse/GameData.h>
 #include <SKSE/PluginAPI.h>
 #include <SKSE/skse_version.h>
 #include <ShlObj.h>
@@ -48,6 +51,7 @@ extern "C"
 	{
 		_MESSAGE("%s has loaded successfully.", pluginName);
 		MenuCloseWatcher::InitHook(skse);
+		InputWatcher::InitHook();
 		g_message->RegisterListener(skse->GetPluginHandle(), "SKSE", [](SKSEMessagingInterface::Message* msg) -> void {
 			if (msg->type == SKSEMessagingInterface::kMessage_PreLoadGame) {
 				ContainerChangeWatcher::RemoveHook();
@@ -57,11 +61,17 @@ extern "C"
 			else if (msg->type == SKSEMessagingInterface::kMessage_PostLoadGame) {
 				if ((bool)msg->data) {
 					_MESSAGE("Game loaded successfully.");
+					if (!MenuCloseWatcher::GetInstance()->GetFakePlayer())
+						MenuCloseWatcher::GetInstance()->InitializeFakePlayer();
 				}
 			}
 			else if (msg->type == SKSEMessagingInterface::kMessage_NewGame) {
 				ContainerChangeWatcher::RemoveHook();
 				MenuCloseWatcher::ResetHook();
+				CellLoadWatcher::InitHook();
+			}
+			else if (msg->type == SKSEMessagingInterface::kMessage_PostLoad) {
+				MenuCloseWatcher::FindCWorld();
 			}
 		});
 		return true;

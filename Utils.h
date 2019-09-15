@@ -9,6 +9,7 @@ class TESObjectREFR;
 struct Quaternion {
 public:
 	float x, y, z, w;
+	Quaternion();
 	Quaternion(float _x, float _y, float _z, float _w);
 	float Norm();
 	NiMatrix33 ToRotationMatrix33();
@@ -32,6 +33,7 @@ namespace Utils {
 	NiPoint3 LocalToWorld(NiPoint3 lpos, NiPoint3 lorigin, NiMatrix33 rot);
 	bool GetNodePosition(TESObjectREFR* ref, const char* nodeName, NiPoint3& point);
 	bool GetTorsoPos(TESObjectREFR* ref, NiPoint3& point);
+	bool GetHeadPos(TESObjectREFR* ref, NiPoint3& point);
 	bool IsInMenuMode();
 	int GetPauseStack();
 	int PauseGame(bool b);

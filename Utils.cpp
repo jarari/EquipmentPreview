@@ -220,6 +220,33 @@ bool Utils::GetTorsoPos(TESObjectREFR* ref, NiPoint3& point) {
 	return true;
 }
 
+//By himika, modified for head
+bool Utils::GetHeadPos(TESObjectREFR* ref, NiPoint3& point) {
+	if (!ref->GetNiNode())
+		return false;
+
+	if (ref->formType == kFormType_Character) {
+		bool dataFound = false;
+		TESRace* race = ((Actor*)ref)->race;
+		BGSBodyPartData* bodyPart = race->bodyPartData;
+		BGSBodyPartData::Data* data = bodyPart->part[1];
+		if (data) {
+			if (GetNodePosition(ref, data->unk04.data, point)) {
+				dataFound = true;
+			}
+		}
+		if (!dataFound) {
+			ref->GetMarkerPosition(&point);
+		}
+	}
+	else {
+		point.x = ref->pos.x;
+		point.y = ref->pos.y;
+		point.z = ref->pos.z;
+	}
+	return true;
+}
+
 bool Utils::IsInMenuMode() {
 	return *((int*)0x1B3E428) > 0;
 }
@@ -253,6 +280,13 @@ void Utils::Dump(void* mem, unsigned int size) {
 			row++;
 		}
 	}
+}
+
+Quaternion::Quaternion() {
+	x = 0;
+	y = 0;
+	z = 0;
+	w = 1;
 }
 
 Quaternion::Quaternion(float _x, float _y, float _z, float _w) {

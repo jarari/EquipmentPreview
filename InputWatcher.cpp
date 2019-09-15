@@ -14,6 +14,11 @@ std::string InputWatcher::className = "InputWatcher";
 void InputWatcher::InitHook() {
 	if (!instance)
 		instance = new InputWatcher();
+}
+
+void InputWatcher::AddHook() {
+	if (!instance)
+		return;
 	(*g_inputEventDispatcher)->AddEventSink((BSTEventSink<InputEvent>*)instance);
 	instance->fakePlayer = MenuCloseWatcher::GetInstance()->GetFakePlayer();
 	instance->mouseRightDown = false;
@@ -36,9 +41,11 @@ InputWatcher::~InputWatcher() {
 }
 
 EventResult InputWatcher::ReceiveEvent(InputEvent** evns, InputEventDispatcher* dispatcher) {
-	if (!fakePlayer)
-		fakePlayer = MenuCloseWatcher::GetInstance()->GetFakePlayer();
-	if (!fakePlayer->GetNiNode())
+	if (!fakePlayer) {
+		RemoveHook();
+		return kEvent_Continue;
+	}
+	if (!fakePlayer->GetNiNode() || !fakePlayer->loadedState || !fakePlayer->loadedState->node)
 		return kEvent_Continue;
 	PlayerCamera* pCam = PlayerCamera::GetSingleton();
 	ThirdPersonState* pCamState = (ThirdPersonState*)pCam->cameraStates[PlayerCamera::kCameraState_ThirdPerson2];
@@ -80,6 +87,9 @@ EventResult InputWatcher::ReceiveEvent(InputEvent** evns, InputEventDispatcher* 
 							}
 							else if (keyCode == 52) {
 								mcw->SyncEquipments(mcw->GetFakePlayer(), *g_thePlayer);
+							}
+							else if (keyCode == 51) {
+								mcw->ToggleLight();
 							}
 						}
 					}

@@ -4,8 +4,18 @@
 
 class Actor;
 class TESForm;
-typedef std::pair<Actor*, TESForm*> WatchData;
-typedef std::vector<WatchData> WatchList;
+struct WatchData {
+public:
+	WatchData(Actor* t, TESForm* i, bool l) {
+		target = t;
+		item = i;
+		left = l;
+	}
+	Actor* target;
+	TESForm* item;
+	bool left;
+};
+typedef std::vector<WatchData*> WatchList;
 
 class ContainerChangeWatcher : public BSTEventSink<TESContainerChangedEvent> {
 protected:
@@ -26,7 +36,7 @@ public:
 	}
 	virtual ~ContainerChangeWatcher();
 
-	static void InitHook(WatchData data);
+	static void InitHook(WatchData* data);
 
 	static void RemoveHook();
 

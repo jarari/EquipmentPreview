@@ -7,7 +7,7 @@ protected:
 	static std::string className;
 	Actor* fakePlayer;
 	bool mouseRightDown = false;
-	float camOffsetXFar = -75;
+	float camOffsetXFar = -85;
 	float camOffsetYFar = -50;
 	float camOffsetZFar = -45;
 	float camOffsetXNear = -25;
@@ -30,6 +30,8 @@ public:
 	virtual ~InputWatcher();
 
 	static void InitHook();
+
+	static void AddHook();
 
 	static void RemoveHook();
 

@@ -10,7 +10,7 @@ ContainerChangeWatcher* ContainerChangeWatcher::instance = nullptr;
 ContainerChangeWatcher::~ContainerChangeWatcher() {
 }
 
-void ContainerChangeWatcher::InitHook(WatchData data) {
+void ContainerChangeWatcher::InitHook(WatchData* data) {
 	if (!instance)
 		instance = new ContainerChangeWatcher();
 	if (!instance->watching) {
@@ -37,10 +37,13 @@ EventResult ContainerChangeWatcher::ReceiveEvent(TESContainerChangedEvent* evn, 
 	if (target && (target == fakePlayer || target == *g_thePlayer)) {
 		TESForm* item = LookupFormByID(evn->itemFormId);
 		bool watch = false;
+		bool left = false;
 		for (WatchList::iterator it = watchList.begin(); it != watchList.end(); ++it) {
-			WatchData data = *it;
-			if (data.first == target && data.second == item) {
+			WatchData* data = *it;
+			if (data->target == target && data->item == item) {
 				watch = true;
+				left = data->left;
+				delete(*it);
 				watchList.erase(it);
 				break;
 			}
@@ -56,6 +59,8 @@ EventResult ContainerChangeWatcher::ReceiveEvent(TESContainerChangedEvent* evn, 
 			BGSEquipSlot* equipSlot = NULL;
 			if (equipType)
 				equipSlot = equipType->GetEquipSlot();
+			if (left)
+				equipSlot = GetLeftHandSlot();
 			CALL_MEMBER_FN(em, EquipItem)(target, item, state.itemExtraList, 1, equipSlot, false, false, false, NULL);
 			InputWatcher::GetInstance()->shouldUpdate = true;
 			watchCount--;

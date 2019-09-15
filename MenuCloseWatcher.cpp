@@ -2,14 +2,16 @@
 #include "MenuCloseWatcher.h"
 #include "InputWatcher.h"
 #include "Utils.h"
-#define _USE_MATH_DEFINES
 #include <SKSE/GameMenus.h>
 #include <skse/PapyrusSpawnerTask.cpp>
 #include <skse/GameData.h>
+#include <skse/GameObjects.h>
 #include <skse/GameRTTI.h>
+#include <skse/NiExtraData.h>
+#include <skse/NiGeometry.h>
 #include <skse/SafeWrite.h>
 #include <common/IMemPool.h>
-#include <unordered_set>
+#define _USE_MATH_DEFINES
 #include <math.h>
 #include <inttypes.h>
 #include <thread>
@@ -21,6 +23,7 @@ const _Disable_Native Disable_Native = (_Disable_Native)0x00908790;
 const _Enable_Native Enable_Native = (_Enable_Native)0x00908AC0;
 const _SetDontMove_Native SetDontMove_Native = (_SetDontMove_Native)0x008DAD20;
 const _SetScale_Native SetScale_Native = (_SetScale_Native)0x0090A210;
+const _SetPosition_Native SetPosition_Native = (_SetPosition_Native)0x00909E40;
 const SKSETaskInterface* g_task;
 const SKSESerializationInterface* g_serialization;
 
@@ -28,6 +31,7 @@ MenuCloseWatcher* MenuCloseWatcher::instance = nullptr;
 
 Actor* fakePlayer = nullptr;
 UInt64 fakePlayerHandle;
+TESObjectREFR* light = nullptr;
 TESCameraState* oldState = nullptr;
 float oldFadeOutLim;
 float oldCamOffsetX;
@@ -37,8 +41,10 @@ float oldCamPitch;
 float oldCamZoom;
 float oldPlayerPitch;
 float camYaw;
-UInt32 stack = 0;
+UInt32 stack = -256;
 bool activated = false;
+bool shouldFaceGen = false;
+bool lightEnabled = false;
 typedef std::pair<TESForm*, int> ItemCount;
 typedef std::vector<ItemCount> SimpleInventory;
 typedef std::vector<ItemCount>::iterator SimpleInventoryCounter;
@@ -65,60 +71,25 @@ DWORD GetHDTBaseAddr() {
 	return base;
 }
 
-class Lockable {
-public:
-	Lockable() { InitializeCriticalSectionAndSpinCount(&cs, 4000); }
-	~Lockable() { DeleteCriticalSection(&cs); }
-
-	void lock() { EnterCriticalSection(&cs); }
-	void unlock() { LeaveCriticalSection(&cs); }
-
-	class Locker {
-	public:
-		Locker(Lockable* obj) :object(obj) { object->lock(); }
-		~Locker() { if (object)object->unlock(); }
-
-		Locker(Locker&& rhs) :object(rhs.object) { rhs.object = 0; }
-		void operator =(Locker&& rhs) { std::swap(object, rhs.object); }
-
-	private:
-		Locker(const Locker&);
-		void operator =(const Locker&);
-
-		Lockable* object;
-	};
-
-	Locker SmartLock() { return this; }
-private:
-
-	Lockable(const Lockable&) {}
-	Lockable& operator =(const Lockable&) {}
-
-	CRITICAL_SECTION cs;
+struct Info {
+	Info() :model(0), system(0) {}
+	NiNode* model;
+	std::shared_ptr<CSystemObject> system;
 };
-
-class CWorld {
-public:
-	Lockable m_lock;							//0x0
-	std::unordered_set<UINT32> m_threadInit;	//0x20 I think?
-	UInt32 m_wind;								//0x28
-	UInt32 m_pWorld;							//0x2C
-	UInt32 m_pMemoryRouter;						//0x30
-	UInt32 m_collisionFilter;					//0x34
-	UInt32 m_jobQueue;							//0x38
-	UInt32 m_jobThreadPool;						//0x3C
-	float m_timeLastUpdate;						//0x40
-	bool m_useSeperatedClock;					//0x44
-};
-
+typedef Bucket<UINT, std::shared_ptr<CCharacter>> CHolder;
+typedef Bucket<UINT32, Info> CSHolder;
+typedef Bucket<UINT, std::shared_ptr<CSystemObject>> SHolder;
+CWorld* g_cworld;
 static const float* timeStamp = (float*)0x12E355C;
+typedef void (hkpRigidBody::* _setPositionAndRotation)(const hkVector4& position, const hkQuaternion& rotation);
+_setPositionAndRotation setPositionAndRotation;
+typedef void (*_applyHardKeyFrame)(const hkVector4& nextPosition, const hkVector4& nextOrientation, float invDeltaTime, hkpRigidBody* body);
+_applyHardKeyFrame applyHardKeyFrame;
 class FreezeEventHandler : public BSTEventSink<MenuOpenCloseEvent> {
 public:
 	typedef EventResult(FreezeEventHandler::* FnReceiveEvent)(MenuOpenCloseEvent* evn, BSTEventSource<MenuOpenCloseEvent>* src);
 
 	static FnReceiveEvent originalFunc;
-	
-	static UInt32 addr_cworld;
 
 	UInt32 GetVPtr() const {
 		return *(UInt32*)this;
@@ -132,8 +103,6 @@ public:
 				g_cworld->m_useSeperatedClock = true;
 				g_cworld->m_timeLastUpdate = clock() * 0.001;
 				g_cworld->m_lock.unlock();*/
-				SafeWrite8(addr_cworld + 0x44, 1);
-				SafeWrite32(addr_cworld + 0x40, clock() * 0.001);
 				return kEvent_Continue;
 			}
 		}
@@ -143,8 +112,6 @@ public:
 				g_cworld->m_useSeperatedClock = false;
 				g_cworld->m_timeLastUpdate = *timeStamp;
 				g_cworld->m_lock.unlock();*/
-				SafeWrite8(addr_cworld + 0x44, 0);
-				SafeWrite32(addr_cworld + 0x40, *timeStamp);
 				return kEvent_Continue;
 			}
 		}
@@ -154,14 +121,17 @@ public:
 
 	void InstallHook() {
 		UInt32 vptr = GetVPtr();
-		addr_cworld = (UInt32)GetHDTBaseAddr() + 0x9CBC18; //Latest HDT PE. HydrogensaysHDT is gone for long so it's unlikely to change..
+		g_cworld = (CWorld*)(GetHDTBaseAddr() + 0x9CBC18); //Latest HDT PE. HydrogensaysHDT is gone for long so it's unlikely to change..
 		originalFunc = *(FnReceiveEvent*)(vptr + 4);
-		_MESSAGE("hdt baseaddr 0x%08x, addr_cworld 0x%08x", (UInt32)GetHDTBaseAddr(), addr_cworld);
+		_MESSAGE("hdt baseaddr 0x%08x, addr_cworld 0x%08x", GetHDTBaseAddr(), g_cworld);
 		SafeWrite32(vptr + 4, GetFnAddr(&FreezeEventHandler::ReceiveEvent_Hook));
+		UInt32 setPosnRotfuncAddr = (GetHDTBaseAddr() + 0xB1030);
+		setPositionAndRotation = *(_setPositionAndRotation*)& setPosnRotfuncAddr;
+		UInt32 applyHardKeyframefuncAddr = (GetHDTBaseAddr() + 0x147B90);
+		applyHardKeyFrame = (_applyHardKeyFrame)applyHardKeyframefuncAddr;
 	}
 };
 FreezeEventHandler::FnReceiveEvent FreezeEventHandler::originalFunc = NULL;
-UInt32 FreezeEventHandler::addr_cworld;
 
 class MenuOpenCloseEventSource : public EventDispatcher<MenuOpenCloseEvent> {
 public:
@@ -177,7 +147,6 @@ public:
 				freezeEventHandler->InstallHook();
 				_MESSAGE("HDT FreezeEvent hooked");
 			}
-
 			++idx;
 		}
 
@@ -193,6 +162,108 @@ public:
 	}
 };
 
+void CWorld::RepositionHDT(Actor* a) {
+	if (!a || !a->GetNiNode() || !a->loadedState || !a->loadedState->node)
+		return;
+	EnterCriticalSection((LPCRITICAL_SECTION)((UInt32)g_cworld + 0x8));
+	CHolder* bucket = (*(CHolder * *)((UInt32)this + 0x48));
+	CHolder* end = bucket;
+	bucket = bucket->next;
+	CHolder* head = bucket;
+	size_t size = *(size_t*)((UInt32)this + 0x4C);
+	bool characterExists = false;
+	for (int i = 0; i < size; i++) {
+		if (bucket->key == a->formID) {
+			characterExists = true;
+			break;
+		}
+		bucket = bucket->next;
+	}
+	if (characterExists) {
+		CCharacter* c = bucket->value.get();
+		EnterCriticalSection((LPCRITICAL_SECTION)((UInt32)c + 0x4));
+		/*if (c->CreateIfValid()) {
+			c->RemoveFromWorld();
+			
+			c->AddToWorld(g_cworld->m_pWorld);
+		}*/
+		c->RemoveFromWorld();
+		CSHolder* s_bucket = (*(CSHolder * *)((UInt32)c + 0x20))->next;
+		CSHolder* s_head = s_bucket;
+		size_t s_size = *(int*)((UInt32)c + 0x24);
+		for (int i = 0; i < s_size; i++) {
+			CSystemObject* so = s_bucket->value.system.get();
+			hkpPhysicsSystem* sys = so->m_system;
+			/*if (so->CreateIfValid()) {
+				so->RemoveFromWorld();
+				
+				so->AddToWorld(g_cworld->m_pWorld);
+			}*/
+			so->RemoveFromWorld();
+			for (int j = 0; j < sys->rigidBodyCount; j++) {
+				if (!so->m_bones[j])
+					continue;
+				hkpRigidBody* rb = sys->m_rigidBodies[j];
+				if (!rb || *(UInt8*)((UInt32)rb + 0xE8) == 0x5)
+					continue;
+				hkMotionState* ms = *(hkMotionState * *)((UInt32)rb + 0x18);
+				if (ms) {
+					(rb->*setPositionAndRotation)(ms->m_sweptTransform.m_centerOfMass0, ms->m_sweptTransform.m_rotation0);
+					applyHardKeyFrame(hkVector4(), hkVector4(), 10000, rb);
+				}
+			}
+			s_bucket = s_bucket->next;
+		}
+		CHolder* prev = bucket->previous;
+		CHolder* next = bucket->next;
+		prev->next = next;
+		next->previous = prev;
+		*(size_t*)((UInt32)this + 0x4C) = size - 1;
+		UInt32 hashend = **(UInt32 * *)((UInt32)this + 0x54);
+		UInt32* hashlist = *(UInt32 * *)((UInt32)this + 0x50);
+		int i = 0;
+		while (hashlist[i] != hashend) {
+			if (hashlist[i] == (UInt32)bucket) {
+				hashlist[i] = (UInt32)end;
+			}
+			++i;
+		}
+		_MESSAGE("Deleted character from HDT list");
+		LeaveCriticalSection((LPCRITICAL_SECTION)((UInt32)c + 0x4));
+	}
+	SHolder* s_bucket = (*(SHolder * *)((UInt32)this + 0x68))->next;
+	SHolder* s_head = s_bucket;
+	size_t s_size = *(size_t*)((UInt32)this + 0x6C);
+	for (int i = 0; i < s_size; i++) {
+		SHolder* tempbucket = s_bucket;
+		CSystemObject* so = s_bucket->value.get();
+		/*if (so->CreateIfValid()) {
+			so->RemoveFromWorld();
+			
+			so->AddToWorld(g_cworld->m_pWorld);
+		}*/
+		so->RemoveFromWorld();
+		if (so->m_skeleton == a->loadedState->node) {
+			hkpPhysicsSystem* sys = so->m_system;
+			for (int j = 0; j < sys->rigidBodyCount; j++) {
+				if (!so->m_bones[j])
+					continue;
+				hkpRigidBody* rb = sys->m_rigidBodies[j];
+				if (!rb || *(UInt8*)((UInt32)rb + 0xE8) == 0x5)
+					continue;
+				hkMotionState* ms = *(hkMotionState * *)((UInt32)rb + 0x18);
+				if (ms) {
+					(rb->*setPositionAndRotation)(ms->m_sweptTransform.m_centerOfMass0, ms->m_sweptTransform.m_rotation0);
+					applyHardKeyFrame(hkVector4(), hkVector4(), 10000, rb);
+				}
+			}
+		}
+		s_bucket = s_bucket->next;
+	}
+	LeaveCriticalSection((LPCRITICAL_SECTION)((UInt32)g_cworld + 0x8));
+}
+
+
 #pragma endregion
 
 MenuCloseWatcher::~MenuCloseWatcher() {
@@ -206,8 +277,9 @@ void SetActorAlpha(Actor* a, float alpha) {
 }
 
 bool CanDualWield(Actor* a, TESForm* item, BGSEquipSlot* equipSlot) {
-	return item->IsWeapon() && (equipSlot == GetLeftHandSlot() || equipSlot == GetRightHandSlot()) &&
-		(a->race->data.raceFlags & TESRace::kRace_CanDualWield);
+	return item->IsWeapon() && 
+		(((equipSlot == GetLeftHandSlot() || equipSlot == GetRightHandSlot()) && (a->race->data.raceFlags & TESRace::kRace_CanDualWield)) ||
+			equipSlot == GetEitherHandSlot());
 }
 
 void CountItems(Actor* a) {
@@ -220,10 +292,7 @@ void CountItems(Actor* a) {
 		InventoryEntryData* extraData = it.Get();
 		if (extraData) {
 			TESForm* item = extraData->type;
-			int baseCount = 0;
-			if (container)
-				baseCount = container->CountItem(item);
-			storedItemList.push_back(std::pair<TESForm*, int>(item, baseCount + extraData->countDelta));
+			storedItemList.push_back(std::pair<TESForm*, int>(item, extraData->countDelta));
 		}
 		++it;
 	}
@@ -231,7 +300,6 @@ void CountItems(Actor* a) {
 
 void MenuCloseWatcher::UnequipAll(Actor* dest) {
 	EquipManager* em = EquipManager::GetSingleton();
-	TESContainer* destcontainer = DYNAMIC_CAST(dest->baseForm, TESForm, TESContainer);
 	ExtraContainerChanges* pXContainerChanges = static_cast<ExtraContainerChanges*>(dest->extraData.GetByType(kExtraData_ContainerChanges));
 	EntryDataList* objList = pXContainerChanges->data->objList;
 	EntryDataList::Iterator it = objList->Begin();
@@ -239,11 +307,8 @@ void MenuCloseWatcher::UnequipAll(Actor* dest) {
 		InventoryEntryData* extraData = it.Get();
 		if (extraData) {
 			TESForm* item = extraData->type;
-			int baseCount = 0;
-			if (destcontainer)
-				baseCount = destcontainer->CountItem(item);
 			InventoryEntryData::EquipData state;
-			extraData->GetEquipItemData(state, item->formID, baseCount);
+			extraData->GetEquipItemData(state, item->formID, 0);
 			BGSEquipType* equipType = DYNAMIC_CAST(item, TESForm, BGSEquipType);
 			BGSEquipSlot* equipSlot = NULL;
 			if (equipType)
@@ -282,25 +347,32 @@ void MenuCloseWatcher::SyncEquipments(Actor* dest, Actor* src) {
 			BGSEquipSlot* equipSlot = NULL;
 			if(equipType)
 				equipSlot = equipType->GetEquipSlot();
-			if (state.isTypeWornLeft || state.isItemWornLeft) {
-				equipSlot = GetLeftHandSlot();
+			if (item->IsWeapon()) {
+				if (state.isTypeWornLeft || state.isItemWornLeft) {
+					equipSlot = GetLeftHandSlot();
+				}
+				else {
+					equipSlot = GetRightHandSlot();
+				}
 			}
 			if (state.isTypeWorn || state.isTypeWornLeft || state.isItemWorn || state.isItemWornLeft) {
 				bool canDualWield = CanDualWield(dest, item, equipSlot) && dest == fakePlayer;
-				int itemCount = 0;
+				int itemCount = baseCount;
 				size_t index = -1;
 				for (SimpleInventoryCounter sc = storedItemList.begin(); sc != storedItemList.end(); ++sc) {
 					ItemCount ic = *sc;
 					index++;
 					if (ic.first == item) {
-						itemCount = ic.second;
+						itemCount += ic.second;
 						break;
 					}
 				}
 				if (itemCount == 0 || (canDualWield && itemCount <= 1)) {
-					int addCount = itemCount + 1;
+					int addCount = 1;
+					if (canDualWield)
+						addCount = (2 - itemCount);
 					storedItemList.at(index).second += addCount;
-					ContainerChangeWatcher::InitHook(WatchData(dest, item));
+					ContainerChangeWatcher::InitHook(new WatchData(dest, item, state.isTypeWornLeft || state.isItemWornLeft));
 					VMClassRegistry* registry = (*g_skyrimVM)->GetClassRegistry();
 					AddItem_Native(registry, stack, dest, item, addCount, true);
 				}
@@ -316,64 +388,52 @@ void MenuCloseWatcher::SyncEquipments(Actor* dest, Actor* src) {
 	InputWatcher::GetInstance()->shouldUpdate = true;
 }
 
-/*IThreadSafeBasicMemPool<WaitAddItemTask, 32> s_WaitAddItemTaskPool;
-
-void TaskLoop(WaitAddItemTask* task) {
-	std::this_thread::sleep_for(std::chrono::microseconds(3000));
-	g_task->AddTask(task);
-}
-
-WaitAddItemTask* WaitAddItemTask::Create(ExtraContainerChanges* ecc, TESForm* i, TESContainer* c, BaseExtraList* el, BGSEquipSlot* s) {
-	WaitAddItemTask* cmd = s_WaitAddItemTaskPool.Allocate();
-	if (cmd) {
-		cmd->extraContainerChanges = ecc;
-		cmd->item = i;
-		cmd->container = c;
-		cmd->extraList = el;
-		cmd->slot = s;
-	}
-	return cmd;
-}
-
-void WaitAddItemTask::Run() {
-	InventoryEntryData::EquipData state;
-	extraContainerChanges->data->GetEquipItemData(state, item, item->formID);
-	itemCount = 0;
-	for (SimpleInventoryCounter it = storedItemList.begin(); it != storedItemList.end(); ++it) {
-		ItemCount c = *it;
-		if (c.first == item) {
-			itemCount = c.second;
-			it = storedItemList.end();
-		}
-	}
-	if (itemCount == 0) {
-		std::thread t = std::thread(&TaskLoop, this);
-		t.detach();
-		return;
-	}
-	EquipManager* em = EquipManager::GetSingleton();
-	CALL_MEMBER_FN(em, EquipItem)(fakePlayer, item, state.itemExtraList, 1, slot, false, false, false, NULL);
-	CALL_MEMBER_FN(fakePlayer, QueueNiNodeUpdate)(false);
-	CALL_MEMBER_FN((ActorProcessManagerEx*)fakePlayer->processManager, UpdateEquipment)(fakePlayer);
-	CALL_MEMBER_FN((ActorProcessManagerEx*)fakePlayer->processManager, UpdateAnimationChannel)(fakePlayer);
-}
-
-void WaitAddItemTask::Dispose() {
-	if (extraContainerChanges && itemCount == 0)
-		return;
-	s_WaitAddItemTaskPool.Free(this);
-}*/
-
-void PositionFakePlayer(NiPoint3 offset = NiPoint3()) {
+void PlaceLight() {
 	PlayerCharacter* player = *g_thePlayer;
-	TESObjectCELL* parentCell = player->parentCell;
-	TESWorldSpace* worldspace = CALL_MEMBER_FN(player, GetWorldspace)();
-	NiPoint3 finalPos = player->pos + offset;
+	VMClassRegistry* registry = (*g_skyrimVM)->GetClassRegistry();
+	TESObjectLIGH* baselight = DYNAMIC_CAST(LookupFormByID(0x13234), TESForm, TESObjectLIGH);
+	light = PlaceAtMe_Native(registry, stack, player, baselight, 1, false, false);
+	UInt32 nullHandle = *g_invalidRefHandle;
+	NiPoint3 pos, fwd;
+	GetHeadPos(player, pos);
+	GetCameraForward(PlayerCamera::GetSingleton(), fwd);
+	pos -= fwd * 100.0f;
+	MoveRefrToPosition(light, &nullHandle, player->parentCell, CALL_MEMBER_FN(player, GetWorldspace)(), &pos, &NiPoint3(0, 0, camYaw));
+	lightEnabled = true;
+}
+
+void DeleteLight() {
+	if (!light)
+		return;
+	VMClassRegistry* registry = (*g_skyrimVM)->GetClassRegistry();
+	Disable_Native(registry, stack, light, false);
+	Delete_Native(registry, stack, light);
+	lightEnabled = false;
+}
+
+void EnableLight() {
+	if (!light)
+		return;
+	VMClassRegistry* registry = (*g_skyrimVM)->GetClassRegistry();
+	Enable_Native(registry, stack, light, false);
+	lightEnabled = true;
+}
+
+void DisableLight() {
+	if (!light)
+		return;
+	VMClassRegistry* registry = (*g_skyrimVM)->GetClassRegistry();
+	Disable_Native(registry, stack, light, false);
+	lightEnabled = false;
+}
+
+void PositionFakePlayer(TESObjectCELL* cell, TESWorldSpace* worldspace, NiPoint3 pos) {
 	UInt32 nullHandle = *g_invalidRefHandle;
 	float yaw = camYaw + M_PI;
-	MoveRefrToPosition(fakePlayer, &nullHandle, parentCell, worldspace, &finalPos, &NiPoint3(0, 0, yaw));
-	fakePlayer->animGraphHolder.SendAnimationEvent("IdleStudy");
-	fakePlayer->rot.z = yaw;
+	MoveRefrToPosition(fakePlayer, &nullHandle, cell, worldspace, &pos, &NiPoint3(0, 0, yaw));
+	if (fakePlayer->loadedState) {
+		fakePlayer->animGraphHolder.SendAnimationEvent("IdleStudy");
+	}
 }
 
 void CreateFakePlayer() {
@@ -385,37 +445,59 @@ void CreateFakePlayer() {
 	fakePlayerHandle = policy->Create(kFormType_Character, fakePlayer);
 	policy->AddRef(fakePlayerHandle);
 	CountItems(fakePlayer);
-	_MESSAGE("New fake player.");
+	_MESSAGE("New fake player 0x%08x", fakePlayer);
 }
 
 void ShowFakePlayer() {
 	if (!fakePlayer)
 		return;
-	VMClassRegistry* registry = (*g_skyrimVM)->GetClassRegistry();
-	//Enable_Native(registry, stack, fakePlayer, true);
+	PlaceLight();
+	PlayerCharacter* player = *g_thePlayer;
 	fakePlayer->flags1 |= Actor::kFlags_AIEnabled;
 	SetActorAlpha(fakePlayer, 1);
-	SetDontMove_Native(registry, stack, *g_thePlayer, true);
+	PositionFakePlayer(player->parentCell, CALL_MEMBER_FN(player, GetWorldspace)(), player->pos);
+	if (g_cworld) {
+		WaitFakePlayerMoveTask* task = WaitFakePlayerMoveTask::Create(fakePlayer, fakePlayerHandle, player->pos, [](Actor* a, UInt64 h) {
+			g_cworld->RepositionHDT(a);
+		});
+		if (task)
+			g_task->AddTask(task);
+	}
 }
 
 void HideFakePlayer() {
 	if (!fakePlayer)
 		return;
-	VMClassRegistry* registry = (*g_skyrimVM)->GetClassRegistry();
+	DeleteLight();
+	PlayerCharacter* player = *g_thePlayer;
 	fakePlayer->flags1 ^= Actor::kFlags_AIEnabled;
-	fakePlayer->flags2 ^= Actor::kFlags_CanDoFavor;
-	PositionFakePlayer(NiPoint3(0, 0, -10000));
+	PositionFakePlayer(player->parentCell, CALL_MEMBER_FN(player, GetWorldspace)(), player->pos - NiPoint3(0, 0,  10000));
 	SetActorAlpha(fakePlayer, 0);
-	SetDontMove_Native(registry, stack, *g_thePlayer, false);
+	VMClassRegistry* registry = (*g_skyrimVM)->GetClassRegistry();
+	SetScale_Native(registry, stack, fakePlayer, 1.0f);
 }
 
 void DeleteFakePlayer() {
 	if (!fakePlayer)
 		return;
 	VMClassRegistry* registry = (*g_skyrimVM)->GetClassRegistry();
-	Disable_Native(registry, stack, fakePlayer, false);
-	Delete_Native(registry, 0, fakePlayer);
+	IObjectHandlePolicy* policy = registry->GetHandlePolicy();
+	PlayerCharacter* player = *g_thePlayer;
+	ShowFakePlayer();
+	WaitFakePlayerMoveTask* task = WaitFakePlayerMoveTask::Create(fakePlayer, fakePlayerHandle, player->pos, [](Actor* a, UInt64 h) {
+		VMClassRegistry* registry = (*g_skyrimVM)->GetClassRegistry();
+		IObjectHandlePolicy* policy = registry->GetHandlePolicy();
+		_MESSAGE ("fakePlayer 0x%08x Deleted", fakePlayer);
+		Disable_Native(registry, stack, a, false);
+		Delete_Native(registry, stack, a);
+		if (h != policy->GetInvalidHandle()) {
+			policy->Release(h);
+		}
+	});
+	if (task)
+		g_task->AddTask(task);
 	fakePlayer = nullptr;
+	fakePlayerHandle = policy->GetInvalidHandle();
 }
 
 void ScaleFakePlayer() {
@@ -423,6 +505,48 @@ void ScaleFakePlayer() {
 	float scale = CALL_MEMBER_FN((ActorEx*)* g_thePlayer, GetScale)();
 	SetScale_Native(registry, stack, fakePlayer, scale);
 	InputWatcher::GetInstance()->AdjustToScale(scale);
+}
+
+void FaceGenFakePlayer() {
+	PlayerCharacter* player = *g_thePlayer;
+	TESNPC* npc = DYNAMIC_CAST(player->baseForm, TESForm, TESNPC);
+	if (npc) {
+		BSFaceGenNiNode* srcfaceNode = player->GetFaceGenNiNode();
+		BSFaceGenNiNode* destfaceNode = fakePlayer->GetFaceGenNiNode();
+		for (int i = 0; i < BGSHeadPart::kNumTypes; i++) {
+			BGSHeadPart* headPart = npc->GetCurrentHeadPartByType(i);
+			if (!headPart)
+				continue;
+			NiAVObject* srctobj = srcfaceNode->GetObjectByName(&headPart->partName.data);
+			NiGeometry* srcgeo;
+			BSFaceGenBaseMorphExtraData* srcextraData;
+			if (srctobj) {
+				srcgeo = srctobj->GetAsNiGeometry();
+				if (srcgeo) {
+					srcextraData = (BSFaceGenBaseMorphExtraData*)srcgeo->GetExtraData("FOD");
+				}
+			}
+			NiAVObject* destobj = destfaceNode->GetObjectByName(&headPart->partName.data);
+			NiGeometry* destgeo;
+			BSFaceGenBaseMorphExtraData* destextraData;
+			if (destobj) {
+				destgeo = destobj->GetAsNiGeometry();
+				if (destgeo) {
+					destextraData = (BSFaceGenBaseMorphExtraData*)destgeo->GetExtraData("FOD");
+				}
+			}
+			if (srcextraData && destextraData) {
+				for (int i = 0; i < destextraData->vertexCount; i++) {
+					destextraData->vertexData[i].x = srcextraData->vertexData[i].x;
+					destextraData->vertexData[i].y = srcextraData->vertexData[i].y;
+					destextraData->vertexData[i].z = srcextraData->vertexData[i].z;
+				}
+				UpdateModelFace(destfaceNode);
+				_MESSAGE("Applied vertex edits to %s. src : 0x%08x, dest : 0x%08x", headPart->partName.data, srcextraData, destextraData);
+			}
+		}
+		shouldFaceGen = false;
+	}
 }
 
 void SetupCamera() {
@@ -466,12 +590,20 @@ void RevertCamera() {
 	player->rot.x = oldPlayerPitch;
 }
 
+void MenuCloseWatcher::ToggleLight() {
+	if (lightEnabled)
+		DisableLight();
+	else
+		EnableLight();
+}
+
 InventoryEntryData* currentItem;
 void MenuCloseWatcher::CheckBefore3DUpdate(InventoryEntryData* objDesc) {
+	currentItem = objDesc;
 	switch (objDesc->type->GetFormType()) {
 		case kFormType_Armor:
 		case kFormType_Ammo:
-			currentItem = objDesc;
+		case kFormType_Weapon:
 			CALL_MEMBER_FN(Inventory3DManager::GetSingleton(), Clear3D)();
 			return;
 	}
@@ -482,6 +614,8 @@ void MenuCloseWatcher::PreviewEquipment() {
 	if (!currentItem)
 		return;
 	TESForm* item = currentItem->type;
+	if (!item->IsWeapon() && !item->IsArmor() && !item->IsAmmo())
+		return;
 	TESContainer* container = DYNAMIC_CAST(fakePlayer, TESForm, TESContainer);
 	int baseCount = 0;
 	if (container)
@@ -506,19 +640,19 @@ void MenuCloseWatcher::PreviewEquipment() {
 		InputWatcher::GetInstance()->shouldUpdate = true;
 	}
 	else {
-		int itemCount = 0;
+		int itemCount = baseCount;
 		size_t index = -1;
 		for (SimpleInventoryCounter sc = storedItemList.begin(); sc != storedItemList.end(); ++sc) {
 			ItemCount ic = *sc;
 			index++;
 			if (ic.first == item) {
-				itemCount = ic.second;
+				itemCount += ic.second;
 				break;
 			}
 		}
 		if (itemCount == 0) {
 			storedItemList.at(index).second += 1;
-			ContainerChangeWatcher::InitHook(WatchData(fakePlayer, item));
+			ContainerChangeWatcher::InitHook(new WatchData(fakePlayer, item, false));
 			VMClassRegistry* registry = (*g_skyrimVM)->GetClassRegistry();
 			AddItem_Native(registry, stack, fakePlayer, item, 1, true);
 		}
@@ -527,6 +661,15 @@ void MenuCloseWatcher::PreviewEquipment() {
 			InputWatcher::GetInstance()->shouldUpdate = true;
 		}
 	}
+}
+
+void MenuCloseWatcher::InitializeFakePlayer() {
+	if (fakePlayer)
+		return;
+	_MESSAGE("Initialize fake player");
+	PlayerCharacter* player = *g_thePlayer;
+	CreateFakePlayer();
+	HideFakePlayer();
 }
 
 void MenuCloseWatcher::InitHook(const SKSEInterface* skse) {
@@ -538,7 +681,7 @@ void MenuCloseWatcher::InitHook(const SKSEInterface* skse) {
 	MenuManager* mm = MenuManager::GetSingleton();
 	if (mm) {
 		mm->MenuOpenCloseEventDispatcher()->AddEventSink((BSTEventSink<MenuOpenCloseEvent>*)instance);
-		_MESSAGE("MenuCloseWatcher added to the sink.");
+		_MESSAGE("MenuCloseWatcher added");
 	}
 	g_serialization->SetUniqueID(skse->GetPluginHandle(), 0x14789632);
 	g_serialization->SetSaveCallback(skse->GetPluginHandle(), Save);
@@ -547,30 +690,35 @@ void MenuCloseWatcher::InitHook(const SKSEInterface* skse) {
 	WriteRelCall(0x8493BE, GetFnAddr(&CheckBefore3DUpdate));    //Container
 }
 
-bool hooked = false;
 void MenuCloseWatcher::ResetHook() {
+	VMClassRegistry* registry = (*g_skyrimVM)->GetClassRegistry();
+	IObjectHandlePolicy* policy = registry->GetHandlePolicy();
 	fakePlayer = nullptr;
+	fakePlayerHandle = policy->GetInvalidHandle();
 	oldState = nullptr;
 	activated = false;
 	storedItemList.clear();
-	if (!hooked) {
-		MenuOpenCloseEventSource::InitHook();
-		hooked = true;
-	}
+}
+
+void MenuCloseWatcher::FindCWorld() {
+	MenuOpenCloseEventSource::InitHook();
 }
 
 const UInt32 kSerializationDataVersion = 1;
 void MenuCloseWatcher::Save(SKSESerializationInterface* si) {
 	if (si->OpenRecord('EQPV', kSerializationDataVersion)) {
-		if (si->WriteRecordData(&fakePlayerHandle, sizeof(fakePlayerHandle))) {
-			_MESSAGE("Saved fakePlayer handle");
+		VMClassRegistry* registry = (*g_skyrimVM)->GetClassRegistry();
+		IObjectHandlePolicy* policy = registry->GetHandlePolicy();
+		if (fakePlayerHandle != policy->GetInvalidHandle()) {
+			if (si->WriteRecordData(&fakePlayerHandle, sizeof(fakePlayerHandle))) {
+				_MESSAGE("Saved fakePlayer handle");
+			}
 		}
 	}
 }
 
 void MenuCloseWatcher::Load(SKSESerializationInterface* si) {
 	UInt32 type, version, length;
-
 	while (si->GetNextRecordInfo(&type, &version, &length)) {
 		if (type == 'EQPV') {
 			UInt64 handle = 0;
@@ -579,6 +727,7 @@ void MenuCloseWatcher::Load(SKSESerializationInterface* si) {
 				IObjectHandlePolicy* policy = registry->GetHandlePolicy();
 				fakePlayer = (Actor*)policy->Resolve(kFormType_Character, handle);
 				if (fakePlayer) {
+					shouldFaceGen = true;
 					CountItems(fakePlayer);
 					_MESSAGE("Loaded fakePlayer from data");
 				}
@@ -595,7 +744,7 @@ EventResult MenuCloseWatcher::ReceiveEvent(MenuOpenCloseEvent* evn, EventDispatc
 	UIStringHolder* uistr = UIStringHolder::GetSingleton();
 	PlayerCamera* pCam = PlayerCamera::GetSingleton();
 	PlayerCharacter* player = *g_thePlayer;
-	if (!uistr || !pCam || !player || !player->GetNiNode()) {
+	if (!uistr || !pCam || !player || !player->GetNiNode() || !fakePlayer) {
 		return kEvent_Continue;
 	}
 	if (evn->menuName == uistr->inventoryMenu ||
@@ -603,14 +752,19 @@ EventResult MenuCloseWatcher::ReceiveEvent(MenuOpenCloseEvent* evn, EventDispatc
 		if (evn->opening) {
 			if (pCam->cameraState != pCam->cameraStates[PlayerCamera::kCameraState_Horse] &&
 				pCam->cameraState != pCam->cameraStates[PlayerCamera::kCameraState_Bleedout]) {
-				InputWatcher::InitHook();
+				InputWatcher::AddHook();
 				SetActorAlpha(player, 0);
 				SetupCamera();
-				if (!fakePlayer)
-					CreateFakePlayer();
-				PositionFakePlayer();
 				ScaleFakePlayer();
+				if (shouldFaceGen) {
+					FaceGenFakePlayer();
+				}
 				ShowFakePlayer();
+				InputWatcher::GetInstance()->shouldUpdate = true;
+				if (g_cworld) {
+					g_cworld->m_useSeperatedClock = true;
+					g_cworld->m_timeLastUpdate = clock() * 0.001;
+				}
 				activated = true;
 			}
 		}
@@ -620,6 +774,10 @@ EventResult MenuCloseWatcher::ReceiveEvent(MenuOpenCloseEvent* evn, EventDispatc
 				InputWatcher::RemoveHook();
 				HideFakePlayer();
 				RevertCamera();
+				if (g_cworld) {
+					g_cworld->m_useSeperatedClock = false;
+					g_cworld->m_timeLastUpdate = *timeStamp;
+				}
 				activated = false;
 			}
 		}
@@ -627,9 +785,51 @@ EventResult MenuCloseWatcher::ReceiveEvent(MenuOpenCloseEvent* evn, EventDispatc
 	else if (evn->menuName == uistr->raceSexMenu) {
 		if (!evn->opening) {
 			DeleteFakePlayer();
-			CreateFakePlayer();
-			HideFakePlayer();
+			InitializeFakePlayer();
 		}
 	}
 	return kEvent_Continue;
 }
+
+IThreadSafeBasicMemPool<WaitFakePlayerMoveTask, 32> s_WaitMoveTaskPool;
+
+void WaitFakePlayerMoveTask::TaskLoop(WaitFakePlayerMoveTask* task) {
+	std::this_thread::sleep_for(std::chrono::microseconds(8333));
+	g_task->AddTask(task);
+	_MESSAGE("Task rescheduled.");
+}
+
+WaitFakePlayerMoveTask* WaitFakePlayerMoveTask::Create(Actor* f, UInt64 h, NiPoint3 p, Functor fn) {
+	WaitFakePlayerMoveTask* task = s_WaitMoveTaskPool.Allocate();
+	if (task) {
+		task->target = f;
+		task->handle = h;
+		task->targetPos = p;
+		task->fn = fn;
+	}
+	return task;
+}
+
+void WaitFakePlayerMoveTask::Run() {
+	if ((target && target->loadedState && Scale(target->loadedState->node->m_worldTransform.pos - targetPos) > 1) || time == 0) {
+		time = *timeStamp;
+		std::thread t = std::thread(&TaskLoop, this);
+		t.detach();
+		return;
+	}
+	else if (!target || !(*g_thePlayer)->loadedState) {
+		dispose = true;
+		return;
+	}
+	_MESSAGE("Running task...");
+	(fn)(target, handle);
+	dispose = true;
+}
+
+void WaitFakePlayerMoveTask::Dispose() {
+	if (!dispose)
+		return;
+	s_WaitMoveTaskPool.Free(this);
+}
+
+
