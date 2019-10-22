@@ -193,7 +193,7 @@ void CWorld::RepositionHDT(Actor* a) {
 				hkMotionState* ms = *(hkMotionState * *)((UInt32)rb + 0x18);
 				if (ms) {
 					(rb->*setPositionAndRotation)(ms->m_sweptTransform.m_centerOfMass0, ms->m_sweptTransform.m_rotation0);
-					applyHardKeyFrame(hkVector4(), hkVector4(), 1000, rb);
+					//applyHardKeyFrame(hkVector4(), hkVector4(), 1000, rb);
 				}
 			}
 			so->ReadFromWorld();
@@ -221,7 +221,7 @@ void CWorld::RepositionHDT(Actor* a) {
 				hkMotionState* ms = *(hkMotionState * *)((UInt32)rb + 0x18);
 				if (ms) {
 					(rb->*setPositionAndRotation)(ms->m_sweptTransform.m_centerOfMass0, ms->m_sweptTransform.m_rotation0);
-					applyHardKeyFrame(hkVector4(), hkVector4(), 1000, rb);
+					//applyHardKeyFrame(hkVector4(), hkVector4(), 1000, rb);
 				}
 			}
 		}
