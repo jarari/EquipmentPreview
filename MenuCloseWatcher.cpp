@@ -101,19 +101,11 @@ public:
 		UIStringHolder* uistr = UIStringHolder::GetSingleton();
 		if (evn->opening) {
 			if (evn->menuName == uistr->inventoryMenu || evn->menuName == uistr->containerMenu) {
-				/*g_cworld->m_lock.lock();
-				g_cworld->m_useSeperatedClock = true;
-				g_cworld->m_timeLastUpdate = clock() * 0.001;
-				g_cworld->m_lock.unlock();*/
 				return kEvent_Continue;
 			}
 		}
 		else {
 			if (evn->menuName == uistr->inventoryMenu || evn->menuName == uistr->containerMenu) {
-				/*g_cworld->m_lock.lock();
-				g_cworld->m_useSeperatedClock = false;
-				g_cworld->m_timeLastUpdate = *timeStamp;
-				g_cworld->m_lock.unlock();*/
 				return kEvent_Continue;
 			}
 		}
@@ -184,11 +176,6 @@ void CWorld::RepositionHDT(Actor* a) {
 	if (characterExists) {
 		CCharacter* c = bucket->value.get();
 		EnterCriticalSection((LPCRITICAL_SECTION)((UInt32)c + 0x4));
-		/*if (c->CreateIfValid()) {
-			c->RemoveFromWorld();
-			
-			c->AddToWorld(g_cworld->m_pWorld);
-		}*/
 		c->RemoveFromWorld();
 		CSHolder* s_bucket = (*(CSHolder * *)((UInt32)c + 0x20))->next;
 		CSHolder* s_head = s_bucket;
@@ -196,11 +183,6 @@ void CWorld::RepositionHDT(Actor* a) {
 		for (int i = 0; i < s_size; i++) {
 			CSystemObject* so = s_bucket->value.system.get();
 			hkpPhysicsSystem* sys = so->m_system;
-			/*if (so->CreateIfValid()) {
-				so->RemoveFromWorld();
-				
-				so->AddToWorld(g_cworld->m_pWorld);
-			}*/
 			so->RemoveFromWorld();
 			for (int j = 0; j < sys->rigidBodyCount; j++) {
 				if (!so->m_bones[j])
@@ -218,20 +200,6 @@ void CWorld::RepositionHDT(Actor* a) {
 			s_bucket = s_bucket->next;
 		}
 		c->ReadFromWorld();
-		/*CHolder* prev = bucket->previous;
-		CHolder* next = bucket->next;
-		prev->next = next;
-		next->previous = prev;
-		*(size_t*)((UInt32)this + 0x4C) = size - 1;
-		UInt32 hashend = **(UInt32 * *)((UInt32)this + 0x54);
-		UInt32* hashlist = *(UInt32 * *)((UInt32)this + 0x50);
-		int i = 0;
-		while (hashlist[i] != hashend) {
-			if (hashlist[i] == (UInt32)bucket) {
-				hashlist[i] = (UInt32)end;
-			}
-			++i;
-		}*/
 		_MESSAGE("Deleted character from HDT list");
 		LeaveCriticalSection((LPCRITICAL_SECTION)((UInt32)c + 0x4));
 	}
@@ -241,11 +209,6 @@ void CWorld::RepositionHDT(Actor* a) {
 	for (int i = 0; i < s_size; i++) {
 		SHolder* tempbucket = s_bucket;
 		CSystemObject* so = s_bucket->value.get();
-		/*if (so->CreateIfValid()) {
-			so->RemoveFromWorld();
-			
-			so->AddToWorld(g_cworld->m_pWorld);
-		}*/
 		so->RemoveFromWorld();
 		if (so->m_skeleton == a->loadedState->node) {
 			hkpPhysicsSystem* sys = so->m_system;
