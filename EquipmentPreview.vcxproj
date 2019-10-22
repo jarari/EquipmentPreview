@@ -118,6 +118,7 @@
   <ItemGroup>
     <ClCompile Include="CellLoadWatcher.cpp" />
     <ClCompile Include="ContainerChangeWatcher.cpp" />
+    <ClCompile Include="FakePlayerStateTask.cpp" />
     <ClCompile Include="InputWatcher.cpp" />
     <ClCompile Include="main.cpp" />
     <ClCompile Include="MenuCloseWatcher.cpp" />
@@ -126,6 +127,7 @@
   <ItemGroup>
     <ClInclude Include="CellLoadWatcher.h" />
     <ClInclude Include="ContainerChangeWatcher.h" />
+    <ClInclude Include="FakePlayerStateTask.h" />
     <ClInclude Include="HavokDefinitions.h" />
     <ClInclude Include="InputWatcher.h" />
     <ClInclude Include="MenuCloseWatcher.h" />

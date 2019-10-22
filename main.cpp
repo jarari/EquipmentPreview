@@ -1,5 +1,6 @@
 #include "CellLoadWatcher.h"
 #include "ContainerChangeWatcher.h"
+#include "FakePlayerStateTask.h"
 #include "InputWatcher.h"
 #include "MenuCloseWatcher.h"
 #include <skse/GameData.h>
@@ -49,31 +50,41 @@ extern "C"
 
 	bool SKSEPlugin_Load(const SKSEInterface * skse)
 	{
-		_MESSAGE("%s has loaded successfully.", pluginName);
 		MenuCloseWatcher::InitHook(skse);
 		InputWatcher::InitHook();
+		FakePlayerStateTask::InitTask((SKSETaskInterface*)skse->QueryInterface(kInterface_Task));
 		g_message->RegisterListener(skse->GetPluginHandle(), "SKSE", [](SKSEMessagingInterface::Message* msg) -> void {
 			if (msg->type == SKSEMessagingInterface::kMessage_PreLoadGame) {
 				ContainerChangeWatcher::RemoveHook();
 				MenuCloseWatcher::ResetHook();
+				FakePlayerStateTask::EndTask();
 				_MESSAGE("Game pre-load.");
 			}
 			else if (msg->type == SKSEMessagingInterface::kMessage_PostLoadGame) {
 				if ((bool)msg->data) {
-					_MESSAGE("Game loaded successfully.");
 					if (!MenuCloseWatcher::GetInstance()->GetFakePlayer())
 						MenuCloseWatcher::GetInstance()->InitializeFakePlayer();
+					PlayerCharacter* player = *g_thePlayer;
+					FakePlayerStateTask::StartTask(player->parentCell);
+					_MESSAGE("Game loaded successfully.");
 				}
 			}
 			else if (msg->type == SKSEMessagingInterface::kMessage_NewGame) {
+				FakePlayerStateTask::EndTask();
 				ContainerChangeWatcher::RemoveHook();
 				MenuCloseWatcher::ResetHook();
 				CellLoadWatcher::InitHook();
+				PlayerCharacter* player = *g_thePlayer;
+				FakePlayerStateTask::StartTask(player->parentCell);
 			}
 			else if (msg->type == SKSEMessagingInterface::kMessage_PostLoad) {
 				MenuCloseWatcher::FindCWorld();
 			}
+			else if (msg->type == SKSEMessagingInterface::kMessage_DataLoaded) {
+				MenuCloseWatcher::GetSkyrimVM();
+			}
 		});
+		_MESSAGE("%s has loaded successfully.", pluginName);
 		return true;
 	}
 };

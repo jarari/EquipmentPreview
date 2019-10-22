@@ -133,7 +133,7 @@ extern const _SetPosition_Native SetPosition_Native;
 typedef void (*Functor)(Actor* t, UInt64 h);
 class WaitFakePlayerMoveTask : public TaskDelegate {
 public:
-	static WaitFakePlayerMoveTask* Create(Actor* f, UInt64 h, NiPoint3 p, Functor fn);
+	static WaitFakePlayerMoveTask* Create(Actor* f, UInt64 h, NiPoint3 p, Functor fn, const char* n = "");
 	static void TaskLoop(WaitFakePlayerMoveTask* task);
 	virtual void Run();
 	virtual void Dispose();
@@ -144,6 +144,7 @@ private:
 	Functor fn;
 	float time = 0;
 	bool dispose = false;
+	const char* name = "";
 };
 
 class ActorEx : public Actor {
@@ -187,15 +188,23 @@ public:
 
 	void InitializeFakePlayer();
 
+	void ForceLoadFakePlayer();
+
+	void HideFakePlayerIfNear();
+
 	static void InitHook(const SKSEInterface* skse);
 
 	static void ResetHook();
 
 	static void FindCWorld();
 
+	static void GetSkyrimVM();
+
 	static void Save(SKSESerializationInterface* si);
 
 	static void Load(SKSESerializationInterface* si);
+
+	bool ResolveFakePlayer();
 
 	Actor* GetFakePlayer();
 

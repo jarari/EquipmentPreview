@@ -29,6 +29,9 @@ const SKSESerializationInterface* g_serialization;
 
 MenuCloseWatcher* MenuCloseWatcher::instance = nullptr;
 
+IThreadSafeBasicMemPool<WaitFakePlayerMoveTask, 32> s_WaitMoveTaskPool;
+VMClassRegistry* registry;
+IObjectHandlePolicy* policy;
 Actor* fakePlayer = nullptr;
 UInt64 fakePlayerHandle;
 TESObjectREFR* light = nullptr;
@@ -43,7 +46,6 @@ float oldPlayerPitch;
 float camYaw;
 UInt32 stack = -256;
 bool activated = false;
-bool shouldFaceGen = false;
 bool lightEnabled = false;
 typedef std::pair<TESForm*, int> ItemCount;
 typedef std::vector<ItemCount> SimpleInventory;
@@ -209,12 +211,14 @@ void CWorld::RepositionHDT(Actor* a) {
 				hkMotionState* ms = *(hkMotionState * *)((UInt32)rb + 0x18);
 				if (ms) {
 					(rb->*setPositionAndRotation)(ms->m_sweptTransform.m_centerOfMass0, ms->m_sweptTransform.m_rotation0);
-					applyHardKeyFrame(hkVector4(), hkVector4(), 10000, rb);
+					applyHardKeyFrame(hkVector4(), hkVector4(), 1000, rb);
 				}
 			}
+			so->ReadFromWorld();
 			s_bucket = s_bucket->next;
 		}
-		CHolder* prev = bucket->previous;
+		c->ReadFromWorld();
+		/*CHolder* prev = bucket->previous;
 		CHolder* next = bucket->next;
 		prev->next = next;
 		next->previous = prev;
@@ -227,7 +231,7 @@ void CWorld::RepositionHDT(Actor* a) {
 				hashlist[i] = (UInt32)end;
 			}
 			++i;
-		}
+		}*/
 		_MESSAGE("Deleted character from HDT list");
 		LeaveCriticalSection((LPCRITICAL_SECTION)((UInt32)c + 0x4));
 	}
@@ -254,10 +258,11 @@ void CWorld::RepositionHDT(Actor* a) {
 				hkMotionState* ms = *(hkMotionState * *)((UInt32)rb + 0x18);
 				if (ms) {
 					(rb->*setPositionAndRotation)(ms->m_sweptTransform.m_centerOfMass0, ms->m_sweptTransform.m_rotation0);
-					applyHardKeyFrame(hkVector4(), hkVector4(), 10000, rb);
+					applyHardKeyFrame(hkVector4(), hkVector4(), 1000, rb);
 				}
 			}
 		}
+		so->ReadFromWorld();
 		s_bucket = s_bucket->next;
 	}
 	LeaveCriticalSection((LPCRITICAL_SECTION)((UInt32)g_cworld + 0x8));
@@ -390,7 +395,6 @@ void MenuCloseWatcher::SyncEquipments(Actor* dest, Actor* src) {
 
 void PlaceLight() {
 	PlayerCharacter* player = *g_thePlayer;
-	VMClassRegistry* registry = (*g_skyrimVM)->GetClassRegistry();
 	TESObjectLIGH* baselight = DYNAMIC_CAST(LookupFormByID(0x13234), TESForm, TESObjectLIGH);
 	light = PlaceAtMe_Native(registry, stack, player, baselight, 1, false, false);
 	UInt32 nullHandle = *g_invalidRefHandle;
@@ -405,7 +409,6 @@ void PlaceLight() {
 void DeleteLight() {
 	if (!light)
 		return;
-	VMClassRegistry* registry = (*g_skyrimVM)->GetClassRegistry();
 	Disable_Native(registry, stack, light, false);
 	Delete_Native(registry, stack, light);
 	lightEnabled = false;
@@ -414,7 +417,6 @@ void DeleteLight() {
 void EnableLight() {
 	if (!light)
 		return;
-	VMClassRegistry* registry = (*g_skyrimVM)->GetClassRegistry();
 	Enable_Native(registry, stack, light, false);
 	lightEnabled = true;
 }
@@ -422,7 +424,6 @@ void EnableLight() {
 void DisableLight() {
 	if (!light)
 		return;
-	VMClassRegistry* registry = (*g_skyrimVM)->GetClassRegistry();
 	Disable_Native(registry, stack, light, false);
 	lightEnabled = false;
 }
@@ -437,11 +438,9 @@ void PositionFakePlayer(TESObjectCELL* cell, TESWorldSpace* worldspace, NiPoint3
 }
 
 void CreateFakePlayer() {
-	VMClassRegistry* registry = (*g_skyrimVM)->GetClassRegistry();
 	PlayerCharacter* player = *g_thePlayer;
 	fakePlayer = (Actor*)PlaceAtMe_Native(registry, stack, player, player->baseForm, 1, false, false);
 	SetDontMove_Native(registry, stack, fakePlayer, true);
-	IObjectHandlePolicy* policy = registry->GetHandlePolicy();
 	fakePlayerHandle = policy->Create(kFormType_Character, fakePlayer);
 	policy->AddRef(fakePlayerHandle);
 	CountItems(fakePlayer);
@@ -457,9 +456,9 @@ void ShowFakePlayer() {
 	SetActorAlpha(fakePlayer, 1);
 	PositionFakePlayer(player->parentCell, CALL_MEMBER_FN(player, GetWorldspace)(), player->pos);
 	if (g_cworld) {
-		WaitFakePlayerMoveTask* task = WaitFakePlayerMoveTask::Create(fakePlayer, fakePlayerHandle, player->pos, [](Actor* a, UInt64 h) {
+		WaitFakePlayerMoveTask* task = WaitFakePlayerMoveTask::Create(fakePlayer, fakePlayerHandle, NiPoint3(), [](Actor* a, UInt64 h) {
 			g_cworld->RepositionHDT(a);
-		});
+		}, "RepositionHDT");
 		if (task)
 			g_task->AddTask(task);
 	}
@@ -471,29 +470,24 @@ void HideFakePlayer() {
 	DeleteLight();
 	PlayerCharacter* player = *g_thePlayer;
 	fakePlayer->flags1 ^= Actor::kFlags_AIEnabled;
-	PositionFakePlayer(player->parentCell, CALL_MEMBER_FN(player, GetWorldspace)(), player->pos - NiPoint3(0, 0,  10000));
+	PositionFakePlayer(player->parentCell, CALL_MEMBER_FN(player, GetWorldspace)(), player->pos - NiPoint3(0, 0,  1000));
 	SetActorAlpha(fakePlayer, 0);
-	VMClassRegistry* registry = (*g_skyrimVM)->GetClassRegistry();
 	SetScale_Native(registry, stack, fakePlayer, 1.0f);
 }
 
 void DeleteFakePlayer() {
 	if (!fakePlayer)
 		return;
-	VMClassRegistry* registry = (*g_skyrimVM)->GetClassRegistry();
-	IObjectHandlePolicy* policy = registry->GetHandlePolicy();
 	PlayerCharacter* player = *g_thePlayer;
 	ShowFakePlayer();
 	WaitFakePlayerMoveTask* task = WaitFakePlayerMoveTask::Create(fakePlayer, fakePlayerHandle, player->pos, [](Actor* a, UInt64 h) {
-		VMClassRegistry* registry = (*g_skyrimVM)->GetClassRegistry();
-		IObjectHandlePolicy* policy = registry->GetHandlePolicy();
 		_MESSAGE ("fakePlayer 0x%08x Deleted", fakePlayer);
 		Disable_Native(registry, stack, a, false);
 		Delete_Native(registry, stack, a);
 		if (h != policy->GetInvalidHandle()) {
 			policy->Release(h);
 		}
-	});
+	}, "Delete fakePlayer");
 	if (task)
 		g_task->AddTask(task);
 	fakePlayer = nullptr;
@@ -501,7 +495,6 @@ void DeleteFakePlayer() {
 }
 
 void ScaleFakePlayer() {
-	VMClassRegistry* registry = (*g_skyrimVM)->GetClassRegistry();
 	float scale = CALL_MEMBER_FN((ActorEx*)* g_thePlayer, GetScale)();
 	SetScale_Native(registry, stack, fakePlayer, scale);
 	InputWatcher::GetInstance()->AdjustToScale(scale);
@@ -513,6 +506,8 @@ void FaceGenFakePlayer() {
 	if (npc) {
 		BSFaceGenNiNode* srcfaceNode = player->GetFaceGenNiNode();
 		BSFaceGenNiNode* destfaceNode = fakePlayer->GetFaceGenNiNode();
+		if (!srcfaceNode || !destfaceNode)
+			return;
 		for (int i = 0; i < BGSHeadPart::kNumTypes; i++) {
 			BGSHeadPart* headPart = npc->GetCurrentHeadPartByType(i);
 			if (!headPart)
@@ -545,7 +540,6 @@ void FaceGenFakePlayer() {
 				_MESSAGE("Applied vertex edits to %s. src : 0x%08x, dest : 0x%08x", headPart->partName.data, srcextraData, destextraData);
 			}
 		}
-		shouldFaceGen = false;
 	}
 }
 
@@ -666,10 +660,34 @@ void MenuCloseWatcher::PreviewEquipment() {
 void MenuCloseWatcher::InitializeFakePlayer() {
 	if (fakePlayer)
 		return;
-	_MESSAGE("Initialize fake player");
 	PlayerCharacter* player = *g_thePlayer;
+	if (!player || !player->GetNiNode())
+		return;
+	_MESSAGE("Initialize fake player");
 	CreateFakePlayer();
 	HideFakePlayer();
+}
+
+void MenuCloseWatcher::ForceLoadFakePlayer() {
+	if (!fakePlayer || fakePlayer->loadedState || activated)
+		return;
+	PlayerCharacter* player = *g_thePlayer;
+	Disable_Native(registry, stack, fakePlayer, false);
+	Enable_Native(registry, stack, fakePlayer, false);
+	PositionFakePlayer(player->parentCell, CALL_MEMBER_FN(player, GetWorldspace)(), player->pos);
+	WaitFakePlayerMoveTask* task = WaitFakePlayerMoveTask::Create(fakePlayer, fakePlayerHandle, NiPoint3(), [](Actor* a, UInt64 h) {
+		PositionFakePlayer(a->parentCell, CALL_MEMBER_FN(a, GetWorldspace)(), a->pos - NiPoint3(0, 0, 1000));
+		SetActorAlpha(fakePlayer, 0);
+	}, "Hide after load");
+	if (task)
+		g_task->AddTask(task);
+}
+
+void MenuCloseWatcher::HideFakePlayerIfNear() {
+	if (!fakePlayer || fakePlayer->loadedState || activated)
+		return;
+	PositionFakePlayer(fakePlayer->parentCell, CALL_MEMBER_FN(fakePlayer, GetWorldspace)(), fakePlayer->pos - NiPoint3(0, 0, 1000));
+	_MESSAGE("FakePlayer too near! Hiding...");
 }
 
 void MenuCloseWatcher::InitHook(const SKSEInterface* skse) {
@@ -691,24 +709,26 @@ void MenuCloseWatcher::InitHook(const SKSEInterface* skse) {
 }
 
 void MenuCloseWatcher::ResetHook() {
-	VMClassRegistry* registry = (*g_skyrimVM)->GetClassRegistry();
-	IObjectHandlePolicy* policy = registry->GetHandlePolicy();
 	fakePlayer = nullptr;
 	fakePlayerHandle = policy->GetInvalidHandle();
 	oldState = nullptr;
 	activated = false;
 	storedItemList.clear();
+	s_WaitMoveTaskPool.Reset();
 }
 
 void MenuCloseWatcher::FindCWorld() {
 	MenuOpenCloseEventSource::InitHook();
 }
 
+void MenuCloseWatcher::GetSkyrimVM() {
+	registry = (*g_skyrimVM)->GetClassRegistry();
+	policy = registry->GetHandlePolicy();
+}
+
 const UInt32 kSerializationDataVersion = 1;
 void MenuCloseWatcher::Save(SKSESerializationInterface* si) {
 	if (si->OpenRecord('EQPV', kSerializationDataVersion)) {
-		VMClassRegistry* registry = (*g_skyrimVM)->GetClassRegistry();
-		IObjectHandlePolicy* policy = registry->GetHandlePolicy();
 		if (fakePlayerHandle != policy->GetInvalidHandle()) {
 			if (si->WriteRecordData(&fakePlayerHandle, sizeof(fakePlayerHandle))) {
 				_MESSAGE("Saved fakePlayer handle");
@@ -723,17 +743,25 @@ void MenuCloseWatcher::Load(SKSESerializationInterface* si) {
 		if (type == 'EQPV') {
 			UInt64 handle = 0;
 			if (si->ReadRecordData(&handle, sizeof(handle))) {
-				VMClassRegistry* registry = (*g_skyrimVM)->GetClassRegistry();
-				IObjectHandlePolicy* policy = registry->GetHandlePolicy();
-				fakePlayer = (Actor*)policy->Resolve(kFormType_Character, handle);
+				fakePlayerHandle = handle;
+				instance->ResolveFakePlayer();
 				if (fakePlayer) {
-					shouldFaceGen = true;
+					instance->ForceLoadFakePlayer();
 					CountItems(fakePlayer);
-					_MESSAGE("Loaded fakePlayer from data");
+					_MESSAGE("Loaded fakePlayer from data 0x%08x", fakePlayer);
 				}
 			}
 		}
 	}
+}
+
+bool MenuCloseWatcher::ResolveFakePlayer() {
+	if (!fakePlayerHandle || fakePlayerHandle == policy->GetInvalidHandle())
+		return false;
+	fakePlayer = (Actor*)policy->Resolve(kFormType_Character, fakePlayerHandle);
+	if (!fakePlayer)
+		return false;
+	return true;
 }
 
 Actor* MenuCloseWatcher::GetFakePlayer() {
@@ -744,8 +772,18 @@ EventResult MenuCloseWatcher::ReceiveEvent(MenuOpenCloseEvent* evn, EventDispatc
 	UIStringHolder* uistr = UIStringHolder::GetSingleton();
 	PlayerCamera* pCam = PlayerCamera::GetSingleton();
 	PlayerCharacter* player = *g_thePlayer;
-	if (!uistr || !pCam || !player || !player->GetNiNode() || !fakePlayer) {
+	if (!uistr || !pCam || !player || !player->GetNiNode()) {
 		return kEvent_Continue;
+	}
+	if (!fakePlayer) {
+		if (ResolveFakePlayer()) {
+			if (!fakePlayer->loadedState || !fakePlayer->loadedState->node) {
+				return kEvent_Continue;
+			}
+		}
+		else {
+			return kEvent_Continue;
+		}
 	}
 	if (evn->menuName == uistr->inventoryMenu ||
 		evn->menuName == uistr->containerMenu) {
@@ -756,9 +794,6 @@ EventResult MenuCloseWatcher::ReceiveEvent(MenuOpenCloseEvent* evn, EventDispatc
 				SetActorAlpha(player, 0);
 				SetupCamera();
 				ScaleFakePlayer();
-				if (shouldFaceGen) {
-					FaceGenFakePlayer();
-				}
 				ShowFakePlayer();
 				InputWatcher::GetInstance()->shouldUpdate = true;
 				if (g_cworld) {
@@ -791,27 +826,27 @@ EventResult MenuCloseWatcher::ReceiveEvent(MenuOpenCloseEvent* evn, EventDispatc
 	return kEvent_Continue;
 }
 
-IThreadSafeBasicMemPool<WaitFakePlayerMoveTask, 32> s_WaitMoveTaskPool;
-
 void WaitFakePlayerMoveTask::TaskLoop(WaitFakePlayerMoveTask* task) {
 	std::this_thread::sleep_for(std::chrono::microseconds(8333));
 	g_task->AddTask(task);
-	_MESSAGE("Task rescheduled.");
 }
 
-WaitFakePlayerMoveTask* WaitFakePlayerMoveTask::Create(Actor* f, UInt64 h, NiPoint3 p, Functor fn) {
+WaitFakePlayerMoveTask* WaitFakePlayerMoveTask::Create(Actor* f, UInt64 h, NiPoint3 p, Functor fn, const char* n) {
 	WaitFakePlayerMoveTask* task = s_WaitMoveTaskPool.Allocate();
 	if (task) {
 		task->target = f;
 		task->handle = h;
 		task->targetPos = p;
 		task->fn = fn;
+		task->name = n;
 	}
+	if (strcmp(n, "") != 0)
+		_MESSAGE("Task %s created.", n);
 	return task;
 }
 
 void WaitFakePlayerMoveTask::Run() {
-	if ((target && target->loadedState && Scale(target->loadedState->node->m_worldTransform.pos - targetPos) > 1) || time == 0) {
+	if (time == 0 || !target || !target->loadedState || !target->loadedState->node || !target->GetNiNode() || !target->GetFaceGenNiNode() || (Scale(target->loadedState->node->m_worldTransform.pos - targetPos) > 100 && Scale(targetPos) != 0)) {
 		time = *timeStamp;
 		std::thread t = std::thread(&TaskLoop, this);
 		t.detach();
@@ -821,7 +856,7 @@ void WaitFakePlayerMoveTask::Run() {
 		dispose = true;
 		return;
 	}
-	_MESSAGE("Running task...");
+	_MESSAGE("Running task %s", name);
 	(fn)(target, handle);
 	dispose = true;
 }
