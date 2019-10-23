@@ -176,14 +176,12 @@ void CWorld::RepositionHDT(Actor* a) {
 	if (characterExists) {
 		CCharacter* c = bucket->value.get();
 		EnterCriticalSection((LPCRITICAL_SECTION)((UInt32)c + 0x4));
-		c->RemoveFromWorld();
 		CSHolder* s_bucket = (*(CSHolder * *)((UInt32)c + 0x20))->next;
 		CSHolder* s_head = s_bucket;
 		size_t s_size = *(int*)((UInt32)c + 0x24);
 		for (int i = 0; i < s_size; i++) {
 			CSystemObject* so = s_bucket->value.system.get();
 			hkpPhysicsSystem* sys = so->m_system;
-			so->RemoveFromWorld();
 			for (int j = 0; j < sys->rigidBodyCount; j++) {
 				if (!so->m_bones[j])
 					continue;
@@ -196,10 +194,8 @@ void CWorld::RepositionHDT(Actor* a) {
 					//applyHardKeyFrame(hkVector4(), hkVector4(), 1000, rb);
 				}
 			}
-			so->ReadFromWorld();
 			s_bucket = s_bucket->next;
 		}
-		c->ReadFromWorld();
 		_MESSAGE("Deleted character from HDT list");
 		LeaveCriticalSection((LPCRITICAL_SECTION)((UInt32)c + 0x4));
 	}
@@ -209,7 +205,6 @@ void CWorld::RepositionHDT(Actor* a) {
 	for (int i = 0; i < s_size; i++) {
 		SHolder* tempbucket = s_bucket;
 		CSystemObject* so = s_bucket->value.get();
-		so->RemoveFromWorld();
 		if (so->m_skeleton == a->loadedState->node) {
 			hkpPhysicsSystem* sys = so->m_system;
 			for (int j = 0; j < sys->rigidBodyCount; j++) {
@@ -225,7 +220,6 @@ void CWorld::RepositionHDT(Actor* a) {
 				}
 			}
 		}
-		so->ReadFromWorld();
 		s_bucket = s_bucket->next;
 	}
 	LeaveCriticalSection((LPCRITICAL_SECTION)((UInt32)g_cworld + 0x8));
